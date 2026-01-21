@@ -692,9 +692,9 @@ ${groupLogStr}
                 let tempContent = aiContent
                     .replace(/\.\.\./g, '{{ELLIPSIS_ENG}}')
                     .replace(/……/g, '{{ELLIPSIS_CN}}')
-                    .replace(/([。])/g, '{{SPLIT}}')
+                    .replace(/([。])(?![）\)\]】"”'])/g, '{{SPLIT}}')
                     .replace(/\.($|\s+)/g, '{{SPLIT}}')
-                    .replace(/([！!？?~]+)/g, '$1{{SPLIT}}')
+                    .replace(/([！!？?~]+)(?![）\)\]】"”'])/g, '$1{{SPLIT}}')
                     .replace(/\n+/g, '{{SPLIT}}')
                     // Only split spaces if both sides are Chinese characters (to protect English sentences and lists like "1. Item")
                     .replace(/([\u4e00-\u9fa5])[ ]+([\u4e00-\u9fa5])/g, '$1{{SPLIT}}$2');

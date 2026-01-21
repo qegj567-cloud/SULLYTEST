@@ -583,9 +583,9 @@ ${recentGroupMsgs}
                     let tempContent = textContent
                         .replace(/\.\.\./g, '{{ELLIPSIS_ENG}}')
                         .replace(/……/g, '{{ELLIPSIS_CN}}')
-                        .replace(/([。])/g, '{{SPLIT}}')
+                        .replace(/([。])(?![）\)\]】"”'])/g, '{{SPLIT}}') // FIX: Don't split if followed by closing bracket
                         .replace(/\.($|\s+)/g, '{{SPLIT}}')
-                        .replace(/([！!？?~]+)/g, '$1{{SPLIT}}')
+                        .replace(/([！!？?~]+)(?![）\)\]】"”'])/g, '$1{{SPLIT}}') // FIX: Don't split if followed by closing bracket
                         .replace(/\n+/g, '{{SPLIT}}');
 
                     const chunks = tempContent

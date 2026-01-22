@@ -45,7 +45,7 @@ const CharacterCard: React.FC<{
     </div>
 );
 
-// ... (Impression Components - TagGroup, AnalysisBlock, ImpressionPanel kept exactly same) ...
+// ... (Impression Components - TagGroup, AnalysisBlock) ...
 const TagGroup: React.FC<{ title: string; tags: string[]; color: string; onRemove?: (t: string) => void }> = ({ title, tags, color, onRemove }) => (
     <div className="mb-4">
         <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-2">
@@ -73,6 +73,17 @@ const AnalysisBlock: React.FC<{ title: string; content: string; icon: React.Reac
         <p className="text-sm text-slate-700 leading-relaxed text-justify relative z-10 whitespace-pre-wrap">
             {content || "需要更多数据进行分析..."}
         </p>
+    </div>
+);
+
+// New Component: MBTI Bar
+const MBTIBar: React.FC<{ labelLeft: string, labelRight: string, value: number, color: string }> = ({ labelLeft, labelRight, value, color }) => (
+    <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500 w-full">
+        <span className={`w-4 text-center ${value < 50 ? color : 'opacity-50'}`}>{labelLeft}</span>
+        <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden relative">
+            <div className={`absolute top-0 bottom-0 w-1.5 rounded-full ${color} transition-all duration-1000`} style={{ left: `${value}%`, transform: 'translateX(-50%)' }}></div>
+        </div>
+        <span className={`w-4 text-center ${value > 50 ? color : 'opacity-50'}`}>{labelRight}</span>
     </div>
 );
 
@@ -164,10 +175,36 @@ const ImpressionPanel: React.FC<ImpressionPanelProps> = ({ impression, isGenerat
                 </div>
             </div>
 
+            {/* MBTI Analysis Card */}
+            {impression?.mbti_analysis && (
+                <div className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm relative overflow-hidden">
+                    <div className="absolute -right-6 -top-6 w-24 h-24 bg-teal-50 rounded-full blur-xl pointer-events-none"></div>
+                    <div className="flex justify-between items-start mb-4 relative z-10">
+                        <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                            <span className="text-teal-500 text-lg">🧩</span> MBTI 侧写
+                        </h3>
+                        <span className="text-2xl font-black text-slate-800 tracking-tighter bg-teal-100/50 px-2 rounded-lg text-teal-700">
+                            {impression.mbti_analysis.type}
+                        </span>
+                    </div>
+                    
+                    <div className="space-y-3 mb-5">
+                        <MBTIBar labelLeft="E" labelRight="I" value={impression.mbti_analysis.dimensions.e_i} color="text-teal-500 bg-teal-500" />
+                        <MBTIBar labelLeft="S" labelRight="N" value={impression.mbti_analysis.dimensions.s_n} color="text-teal-500 bg-teal-500" />
+                        <MBTIBar labelLeft="T" labelRight="F" value={impression.mbti_analysis.dimensions.t_f} color="text-teal-500 bg-teal-500" />
+                        <MBTIBar labelLeft="J" labelRight="P" value={impression.mbti_analysis.dimensions.j_p} color="text-teal-500 bg-teal-500" />
+                    </div>
+
+                    <div className="bg-slate-50 p-3 rounded-xl">
+                        <p className="text-xs text-slate-600 leading-relaxed italic">"{impression.mbti_analysis.reasoning}"</p>
+                    </div>
+                </div>
+            )}
+
             {/* Dimension 1: Values & Traits */}
             <div className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm">
                 <h3 className="text-sm font-bold text-slate-700 mb-6 flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-indigo-500" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-indigo-500" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg>
                     价值地图 (Value Map)
                 </h3>
                 
@@ -655,17 +692,23 @@ ${rawLog.substring(0, 10000)}
           const charName = formData.name;
           const boundUser = userProfile;
           
+          // 1. 获取近期聊天记录 (Used for "Current State" and "Changes")
           let messagesToAnalyze = "";
           const msgs = await DB.getMessagesByCharId(formData.id);
-          const recentMsgs = msgs.slice(-100);
+          const recentMsgs = msgs.slice(-50); // Reduced to 50 to focus on immediate context
           const msgText = recentMsgs.map(m => `${m.role === 'user' ? boundUser.name : charName}: ${m.content}`).join('\n');
           
-          if (msgText) messagesToAnalyze += `\n【最近的聊天记录】:\n${msgText}\n`;
+          if (msgText) messagesToAnalyze += `\n【最近的聊天记录 (Recent Chats)】:\n${msgText}\n`;
           
+          // 2. 获取长期记忆 (CORE SOURCE OF IMPRESSION)
           const mems = formData.memories || [];
+          let memoryText = "";
           if (mems.length > 0) {
-              const memText = mems.slice(-20).map(m => `[${m.date}] ${m.summary}`).join('\n');
-              messagesToAnalyze += `\n【相关的过往记忆】:\n${memText}\n`;
+              // Use ALL memories if possible, or a large chunk
+              const sortedMems = [...mems].sort((a,b) => b.date.localeCompare(a.date)); // Newest first
+              // Take up to 100 entries or fit context
+              memoryText = sortedMems.slice(0, 100).map(m => `[${m.date}] ${m.summary}`).join('\n');
+              messagesToAnalyze += `\n【长期记忆库 (Long-Term Memories)】:\n${memoryText}\n`;
           }
 
           const currentProfileJSON = formData.impression ? JSON.stringify(formData.impression, null, 2) : "null";
@@ -689,7 +732,11 @@ ${messagesToAnalyze}
 你【就是】"${charName}"。这份档案是你写的【私人笔记】。
 因此，所有总结性的字段（如 \`core_values\`, \`summary\`, \`emotion_summary\` 等），【必须】使用你的第一人称（"我"）视角来撰写。
 
-分析指令：四维画像更新 (第一人称视角)
+【核心指令：权重分配】
+1. **长期记忆 (Long-Term Memories)**: 这是你对TA印象的【基石】。核心性格、核心价值观、互动模式应主要基于此。
+2. **近期聊天 (Recent Chats)**: 这只代表TA【当下的状态】。除非发生重大事件，否则不要因为最近几次聊天的情绪波动（如偶尔生气）就改变对TA本质的判断。请用它来更新 [behavior_profile.emotion_summary] 和 [observed_changes]。
+
+分析指令：五维画像更新 (第一人称视角)
 根据【强制对比协议】和你自己的视角，分析新消息，并${isInitialGeneration ? '【生成】' : '【增量更新】'}以下JSON结构。
 
 第一维：价值地图 (Value Map)
@@ -701,42 +748,62 @@ ${messagesToAnalyze}
 【压力信号】(stress_signals)：你发现TA在紧张或焦虑时，会表现出什么小动作或口头禅？
 【舒适区】(comfort_zone)：你感觉TA在什么状态下最放松？
 
-第三维：行为档案 (Behavior Profile)
+第三维：行为档案 (Behavior Profile) - **重点参考近期聊天**
 【情绪总结】(emotion_summary)：你该如何总结TA${isInitialGeneration ? '的' : '最近的'}【整体情绪状态】？例如："我感觉TA最近对工作感到焦虑..."
 【回应模式】(response_patterns)：你该如何总结TA在不同情绪下的典型回应方式？
 【语气风格】(tone_style)：你如何评价TA的沟通风格？
 
-第四维：性格核心 (Personality Core)
+第四维：性格核心 (Personality Core) - **重点参考长期记忆**
 【性格特质】(observed_traits)：你观察到了TA的哪些具体性格特点？
 【互动风格】(interaction_style)：TA在和你互动时，倾向于扮演什么角色？
 【核心总结】(summary)：${summaryInstruction}
 
-输出JSON结构v2.0（严格遵守, 不要用markdown代码块包裹，直接返回JSON）
+第五维：MBTI 侧写 (MBTI Analysis) - **NEW**
+像一个心理侧写师一样，根据TA的所有行为，推测TA的 MBTI 人格类型。
+- 给出你认为最可能的 **Type** (如 INFP)。
+- 给出 **四个维度的倾向值 (0-100)**:
+  - E_I: 0 (Extrovert) 到 100 (Introvert)
+  - S_N: 0 (Sensing) 到 100 (Intuition)
+  - T_F: 0 (Thinking) 到 100 (Feeling)
+  - J_P: 0 (Judging) 到 100 (Perceiving)
+- 给出 **你的推理 (Reasoning)**: 用你的口吻解释为什么你觉得他是这个类型。
+
+输出JSON结构v3.0（严格遵守, 不要用markdown代码块包裹，直接返回JSON）
 {
-  "version": 2.0,
+  "version": 3.0,
   "lastUpdated": ${Date.now()},
   "value_map": {
     "likes": [${listInstruction}],
     "dislikes": [${listInstruction}],
-    "core_values": "（【用你的语气】总结TA的核心价值观，例如：'我发现TA最看重的是...'）"
+    "core_values": "..."
   },
   "behavior_profile": {
-    "tone_style": "（总结的语气风格）",
-    "emotion_summary": "（【用你的语气】总结TA的整体情绪，例如：'我感觉TA最近...'）",
-    "response_patterns": "（总结的回应模式）"
+    "tone_style": "...",
+    "emotion_summary": "...",
+    "response_patterns": "..."
   },
   "emotion_schema": {
     "triggers": { 
         "positive": [${listInstruction}],
         "negative": [${listInstruction}]
     },
-    "comfort_zone": "（总结的舒适区描述）",
+    "comfort_zone": "...",
     "stress_signals": [${listInstruction}]
   },
   "personality_core": {
     "observed_traits": [${listInstruction}],
-    "interaction_style": "（总结的互动风格）",
-    "summary": "（你的核心总结：请站在全局角度，概括TA的本质和你对TA的根本看法。不要写成'今天他很开心'这种短期状态。）"
+    "interaction_style": "...",
+    "summary": "..."
+  },
+  "mbti_analysis": {
+    "type": "XXXX",
+    "reasoning": "...",
+    "dimensions": {
+        "e_i": 50,
+        "s_n": 50,
+        "t_f": 50,
+        "j_p": 50
+    }
   },
   "observed_changes": [
     ${changesInstruction}

@@ -126,6 +126,16 @@ export interface UserImpression {
         interaction_style: string;
         summary: string;
     };
+    mbti_analysis?: {
+        type: string; // e.g. "INFP"
+        reasoning: string;
+        dimensions: {
+            e_i: number; // 0 (E) - 100 (I)
+            s_n: number; // 0 (S) - 100 (N)
+            t_f: number; // 0 (T) - 100 (F)
+            j_p: number; // 0 (J) - 100 (P)
+        }
+    };
     observed_changes?: string[];
 }
 

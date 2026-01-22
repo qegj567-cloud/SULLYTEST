@@ -17,8 +17,9 @@ import ScheduleApp from '../apps/ScheduleApp';
 import RoomApp from '../apps/RoomApp'; 
 import { AppID } from '../types';
 import { App as CapApp } from '@capacitor/app';
-import { StatusBar as CapStatusBar } from '@capacitor/status-bar';
+import { StatusBar as CapStatusBar, Style as StatusBarStyle } from '@capacitor/status-bar';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { Capacitor } from '@capacitor/core';
 
 const PhoneShell: React.FC = () => {
   const { theme, isLocked, unlock, activeApp, closeApp, virtualTime, isDataLoaded, toasts } = useOS();
@@ -26,45 +27,55 @@ const PhoneShell: React.FC = () => {
   // Capacitor Native Handling
   useEffect(() => {
     const initNative = async () => {
-        try {
-            // Android: Hide the system status bar for immersive "Virtual OS" feel
-            await CapStatusBar.hide(); 
-            
-            // Request Notification Permissions explicitly on boot
-            // This ensures the system dialog appears so scheduled messages can actually push to status bar
-            const permStatus = await LocalNotifications.checkPermissions();
-            if (permStatus.display !== 'granted') {
-                await LocalNotifications.requestPermissions();
-            }
+        if (Capacitor.isNativePlatform()) {
+            try {
+                // 1. 设置状态栏覆盖 WebView (关键：让网页内容延伸到刘海屏区域)
+                await CapStatusBar.setOverlaysWebView({ overlay: true });
+                
+                // 2. 隐藏原生状态栏 (使用我们的模拟状态栏替代)
+                await CapStatusBar.hide();
+                
+                // 3. (可选) 如果隐藏失败，设置状态栏样式为透明/深色模式以融合
+                await CapStatusBar.setStyle({ style: StatusBarStyle.Dark });
 
-        } catch (e) {
-            // Likely running in browser, ignore
+                // Request Notification Permissions
+                const permStatus = await LocalNotifications.checkPermissions();
+                if (permStatus.display !== 'granted') {
+                    await LocalNotifications.requestPermissions();
+                }
+            } catch (e) {
+                console.error("Native init failed", e);
+            }
         }
     };
     initNative();
 
     // Handle Android Hardware Back Button
     const setupBackButton = async () => {
-        try {
-            await CapApp.removeAllListeners();
-            CapApp.addListener('backButton', ({ canGoBack }) => {
-                // If an app is open, close it (go to Launcher)
-                if (activeApp !== AppID.Launcher) {
-                    closeApp();
-                } else if (!isLocked) {
-                    // If on Launcher and not locked, maybe ask to exit or minimize
-                    // For now, let's just minimize/exit
-                    CapApp.exitApp();
-                }
-            });
-        } catch (e) { console.log('Back button listener setup failed (not native)'); }
+        if (Capacitor.isNativePlatform()) {
+            try {
+                await CapApp.removeAllListeners();
+                CapApp.addListener('backButton', ({ canGoBack }) => {
+                    // If an app is open, close it (go to Launcher)
+                    if (activeApp !== AppID.Launcher) {
+                        closeApp();
+                    } else if (!isLocked) {
+                        // If on Launcher and not locked, maybe ask to exit or minimize
+                        // For now, let's just minimize/exit
+                        CapApp.exitApp();
+                    }
+                });
+            } catch (e) { console.log('Back button listener setup failed'); }
+        }
     };
 
     setupBackButton();
 
     // Re-bind when activeApp changes to ensure closure captures latest state
     return () => {
-        CapApp.removeAllListeners().catch(() => {});
+        if (Capacitor.isNativePlatform()) {
+            CapApp.removeAllListeners().catch(() => {});
+        }
     };
   }, [activeApp, isLocked, closeApp]);
 

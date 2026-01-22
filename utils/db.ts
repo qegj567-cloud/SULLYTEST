@@ -6,8 +6,8 @@ import {
 } from '../types';
 
 const DB_NAME = 'AetherOS_Data';
-// CRITICAL FIX: Increment version to force `onupgradeneeded`
-const DB_VERSION = 20; 
+// CRITICAL FIX: Increment version to force `onupgradeneeded` for recent feature updates
+const DB_VERSION = 21; 
 
 const STORE_CHARACTERS = 'characters';
 const STORE_MESSAGES = 'messages';
@@ -58,9 +58,9 @@ const openDB = (): Promise<IDBDatabase> => {
       if (!db.objectStoreNames.contains(STORE_MESSAGES)) {
         const msgStore = db.createObjectStore(STORE_MESSAGES, { keyPath: 'id', autoIncrement: true });
         msgStore.createIndex('charId', 'charId', { unique: false });
-        msgStore.createIndex('groupId', 'groupId', { unique: false }); // New Index
+        msgStore.createIndex('groupId', 'groupId', { unique: false }); // New Index for Groups
       } else {
-          // If message store exists but index doesn't (upgrade path)
+          // Upgrade Path: If message store exists but index doesn't
           const msgStore = (event.target as IDBOpenDBRequest).transaction?.objectStore(STORE_MESSAGES);
           if (msgStore && !msgStore.indexNames.contains('groupId')) {
               msgStore.createIndex('groupId', 'groupId', { unique: false });

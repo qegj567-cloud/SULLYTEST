@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
@@ -39,19 +38,22 @@ const JournalApp: React.FC = () => {
     const [selectedChar, setSelectedChar] = useState<CharacterProfile | null>(null);
     const [diaries, setDiaries] = useState<DiaryEntry[]>([]);
     const [currentEntry, setCurrentEntry] = useState<DiaryEntry | null>(null);
-    // FIX: Use local date instead of UTC
     const [selectedDate, setSelectedDate] = useState<string>(getLocalDateStr());
     
     // Editor State
     const [isThinking, setIsThinking] = useState(false);
+    const [isArchiving, setIsArchiving] = useState(false); // New: Archiving state
     const [showStickerPanel, setShowStickerPanel] = useState(false);
     const [activeTab, setActiveTab] = useState<'user' | 'char'>('user'); // View Tab
+    const [hideCharStickers, setHideCharStickers] = useState(false); // Toggle to hide char stickers
     
     // Sticker Interaction State
     const [draggingSticker, setDraggingSticker] = useState<string | null>(null);
+    const [selectedStickerId, setSelectedStickerId] = useState<string | null>(null); // For resizing/deleting
+    const [resizingSticker, setResizingSticker] = useState<string | null>(null);
     const paperRef = useRef<HTMLDivElement>(null);
     
-    // Custom Stickers State
+    // Custom Stickers State (Separate from Chat Emojis)
     const [customStickers, setCustomStickers] = useState<{name: string, url: string}[]>([]);
     const [showImportModal, setShowImportModal] = useState(false);
     const [importText, setImportText] = useState('');
@@ -69,8 +71,8 @@ const JournalApp: React.FC = () => {
                 loadDiaries(initial.id);
             }
         }
-        // Load custom stickers (reusing emoji store)
-        DB.getEmojis().then(setCustomStickers);
+        // Load custom stickers from new journal store
+        DB.getJournalStickers().then(setCustomStickers);
     }, [activeCharacterId]);
 
     const loadDiaries = async (charId: string) => {
@@ -104,6 +106,7 @@ const JournalApp: React.FC = () => {
         }
         setMode('write');
         setSelectedDate(date);
+        setSelectedStickerId(null); // Reset selection
     };
 
     // --- Editor Logic ---
@@ -127,14 +130,15 @@ const JournalApp: React.FC = () => {
     const addSticker = (url: string) => {
         const side = activeTab;
         const targetPage = side === 'user' ? currentEntry?.userPage : currentEntry?.charPage;
-        if (!targetPage && side === 'char') return; // Cannot edit char page if it doesn't exist
+        if (!targetPage && side === 'char') return;
 
         const newSticker: StickerData = {
             id: `st-${Date.now()}-${Math.random()}`,
             url,
-            x: 50, // Default center
+            x: 50,
             y: 50,
-            rotation: (Math.random() - 0.5) * 40
+            rotation: (Math.random() - 0.5) * 40,
+            scale: 1.0 // Default scale
         };
         
         const currentStickers = targetPage?.stickers || [];
@@ -152,20 +156,20 @@ const JournalApp: React.FC = () => {
                 const name = parts[0].trim();
                 const url = parts.slice(1).join('--').trim();
                 if (name && url) {
-                    await DB.saveEmoji(name, url);
+                    await DB.saveJournalSticker(name, url); // Changed Store
                     count++;
                 }
             }
         }
-        setCustomStickers(await DB.getEmojis());
+        setCustomStickers(await DB.getJournalStickers()); // Changed Store
         setImportText('');
         setShowImportModal(false);
         addToast(`成功添加 ${count} 个贴纸`, 'success');
     };
 
-    const handleDeleteSticker = async () => {
+    const handleDeleteStickerAsset = async () => {
         if (deletingSticker) {
-            await DB.deleteEmoji(deletingSticker.name);
+            await DB.deleteJournalSticker(deletingSticker.name); // Changed Store
             setCustomStickers(prev => prev.filter(s => s.name !== deletingSticker.name));
             setDeletingSticker(null);
             addToast('贴纸已删除', 'success');
@@ -179,41 +183,87 @@ const JournalApp: React.FC = () => {
         addToast('日记已保存', 'success');
     };
 
-    // --- Sticker Dragging Logic ---
+    // --- Interaction Logic (Move, Resize, Delete) ---
 
-    const handlePointerDown = (e: React.PointerEvent, stickerId: string) => {
-        if (activeTab === 'char' && currentEntry?.charPage) return; // Prevent editing char stickers unless strictly needed
-        if (activeTab === 'user') {
-             e.stopPropagation();
-             e.currentTarget.setPointerCapture(e.pointerId);
-             setDraggingSticker(stickerId);
+    // 1. Selection
+    const selectSticker = (e: React.MouseEvent | React.TouchEvent, id: string) => {
+        e.stopPropagation();
+        setSelectedStickerId(id);
+    };
+
+    // 2. Remove Sticker from Page
+    const removeStickerFromPage = (id: string) => {
+        const targetPage = activeTab === 'user' ? currentEntry?.userPage : currentEntry?.charPage;
+        if (!targetPage) return;
+        const updated = targetPage.stickers.filter(s => s.id !== id);
+        updatePage({ stickers: updated }, activeTab);
+        setSelectedStickerId(null);
+    };
+
+    // 3. Pointer Handlers (Move & Resize)
+    const handlePointerDown = (e: React.PointerEvent, stickerId: string, action: 'move' | 'resize') => {
+        // Allow editing on char page too now
+        e.preventDefault();
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        
+        if (action === 'move') {
+            setDraggingSticker(stickerId);
+            setSelectedStickerId(stickerId); // Select on drag start
+        } else {
+            setResizingSticker(stickerId);
         }
     };
 
     const handlePointerMove = (e: React.PointerEvent) => {
-        if (!draggingSticker || !paperRef.current || !currentEntry) return;
+        if ((!draggingSticker && !resizingSticker) || !paperRef.current || !currentEntry) return;
 
         const rect = paperRef.current.getBoundingClientRect();
-        const x = ((e.clientX - rect.left) / rect.width) * 100;
-        const y = ((e.clientY - rect.top) / rect.height) * 100;
-
-        // Clamp values 0-100
-        const clampedX = Math.max(0, Math.min(100, x));
-        const clampedY = Math.max(0, Math.min(100, y));
-
+        
         const targetPage = activeTab === 'user' ? currentEntry.userPage : currentEntry.charPage;
         if (!targetPage) return;
 
-        const updatedStickers = targetPage.stickers.map(s => 
-            s.id === draggingSticker ? { ...s, x: clampedX, y: clampedY } : s
-        );
+        // Logic for Moving
+        if (draggingSticker) {
+            const x = ((e.clientX - rect.left) / rect.width) * 100;
+            const y = ((e.clientY - rect.top) / rect.height) * 100;
+            const clampedX = Math.max(0, Math.min(100, x));
+            const clampedY = Math.max(0, Math.min(100, y));
 
-        updatePage({ stickers: updatedStickers }, activeTab);
+            const updatedStickers = targetPage.stickers.map(s => 
+                s.id === draggingSticker ? { ...s, x: clampedX, y: clampedY } : s
+            );
+            updatePage({ stickers: updatedStickers }, activeTab);
+        }
+
+        // Logic for Resizing
+        if (resizingSticker) {
+            const sticker = targetPage.stickers.find(s => s.id === resizingSticker);
+            if (!sticker) return;
+
+            // Simple scale logic based on distance from center of sticker (simulated by pointer position relative to paper)
+            const dx = (e.clientX - rect.left) - (sticker.x / 100 * rect.width);
+            const dy = (e.clientY - rect.top) - (sticker.y / 100 * rect.height);
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            
+            // Assume 50px is scale 1
+            const newScale = Math.max(0.2, Math.min(3.0, dist / 40));
+            
+            const updatedStickers = targetPage.stickers.map(s => 
+                s.id === resizingSticker ? { ...s, scale: newScale } : s
+            );
+            updatePage({ stickers: updatedStickers }, activeTab);
+        }
     };
 
     const handlePointerUp = (e: React.PointerEvent) => {
         setDraggingSticker(null);
+        setResizingSticker(null);
         e.currentTarget.releasePointerCapture(e.pointerId);
+    };
+
+    const handleBackgroundClick = () => {
+        setSelectedStickerId(null); // Deselect when clicking background
     };
 
     // Long press handler for drawer items
@@ -246,26 +296,21 @@ const JournalApp: React.FC = () => {
         saveEntry(); 
 
         try {
-            // 1. Build Standardized Core Context
             let systemPrompt = ContextBuilder.buildCoreContext(selectedChar, userProfile);
 
             const styleOptions = PAPER_STYLES.map(p => p.id).join(', ');
             const defaultStickers = DEFAULT_STICKERS.join(' ');
-            
-            // Format custom stickers for prompt
             const customStickerContext = customStickers.length > 0 
                 ? `Custom Stickers (Name: URL): \n${customStickers.map(s => `- ${s.name}: ${s.url}`).join('\n')}`
                 : '';
 
-            // 2. Fetch Recent Chat History for Context
             const recentMsgs = await DB.getMessagesByCharId(selectedChar.id);
-            const contextLimit = 30; // Limit to last 30 messages to catch recent events
+            const contextLimit = 30;
             const recentContext = recentMsgs.slice(-contextLimit).map(m => {
                 const content = m.type === 'image' ? '[User sent an image]' : m.content;
                 return `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.role === 'user' ? 'User' : 'You'}: ${content}`;
             }).join('\n');
 
-            // 3. Append Diary Instructions with Context
             systemPrompt += `### [Exchange Diary Mode Instructions]
 你正在和用户进行【交换日记】互动。
 
@@ -279,9 +324,9 @@ ${recentContext}
 ### 任务
 1. 阅读用户今天的日记 (${currentEntry.date})。
 2. 以你的角色口吻写一篇**回复日记**。
-   - 首先回应用户的内容（吐槽、安慰、共鸣等）。
-   - **结合上面的 [RECENT LOGS]**，回顾今天互动的细节。
-   - 然后分享一些你自己生活中的琐事或心情，得是对方不知道的。
+   - 首先结合上文的聊天记录，回应用户的内容。
+   - 最重要的是分享你的生活，此条为必须项**务必说至少一件用户不知道的，你今天做的事情，尽量与用户无关！用户希望看到角色完全独立的一面**。
+   - 语言风格在符合设定的基础上，应该更加书面化和诗意，不过一切以角色性格优先。
 3. 选择适合你心情的信纸和贴纸。
 
 ### 关于贴纸 (Stickers)
@@ -290,12 +335,11 @@ ${customStickerContext}
 如果要使用 Custom Sticker，请将 URL 直接放入返回的 stickers 数组中。
 
 ### 输出格式 (必须是纯 JSON)
-不要使用 markdown 代码块。直接返回 JSON 对象。
 Structure:
 {
   "text": "日记正文...",
   "paperStyle": "one of: ${styleOptions}",
-  "stickers": ["sticker1", "http://custom-sticker-url..."] (从默认列表: ${defaultStickers} 或 Custom Stickers 中选0-3个)
+  "stickers": ["sticker1", "http://custom-sticker-url..."] (从默认列表或 Custom Stickers 中选0-3个)
 }`;
 
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -328,7 +372,8 @@ Structure:
                 url: s,
                 x: Math.random() * 70 + 10,
                 y: Math.random() * 70 + 10,
-                rotation: (Math.random() - 0.5) * 40
+                rotation: (Math.random() - 0.5) * 40,
+                scale: 1.0
             }));
 
             const charPage: DiaryPage = {
@@ -341,7 +386,7 @@ Structure:
             setCurrentEntry(updatedEntry);
             await DB.saveDiary(updatedEntry);
             await loadDiaries(selectedChar.id);
-            setActiveTab('char'); // Switch to see reply
+            setActiveTab('char');
             addToast('对方已回复', 'success');
 
         } catch (e: any) {
@@ -354,14 +399,29 @@ Structure:
     const handleArchive = async () => {
         if (!currentEntry || !selectedChar || currentEntry.isArchived) return;
         
+        setIsArchiving(true); // START LOADING
+        
         try {
-            addToast('正在归档...', 'info');
-            const prompt = `Task: 将这篇交换日记 (${currentEntry.date}) 总结为 ${selectedChar.name} 的一条记忆。
-            
-            User Diary: ${currentEntry.userPage.text}
-            Char Diary: ${currentEntry.charPage?.text || ''}
-            
-            Output: 一句简短的总结 (中文)。`;
+            // 1. Build Context using ContextBuilder to ensure AI knows WHO it is
+            const baseContext = ContextBuilder.buildCoreContext(selectedChar, userProfile);
+
+            const prompt = `${baseContext}
+
+### [System Instruction: Diary Archival]
+当前任务: 将这篇【交换日记】(${currentEntry.date}) 总结为一条属于你的“核心记忆”。
+
+### 输入内容 (Input)
+用户 (${userProfile.name}) 的日记:
+"${currentEntry.userPage.text}"
+
+你 (${selectedChar.name}) 的回复:
+"${currentEntry.charPage?.text || '(无)'}"
+
+### 输出要求 (Output Requirements)
+1. **绝对第一人称**: 必须用“我”来称呼自己，用“${userProfile.name}”称呼用户。
+2. **内容聚焦**: 总结日记中提到的关键事件、你的感受以及你们之间的互动。
+3. **格式**: 输出一句简练的中文总结 (50字以内)。不要包含任何前缀。
+`;
             
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
@@ -375,7 +435,8 @@ Structure:
             
             if (response.ok) {
                 const data = await response.json();
-                const summary = data.choices[0].message.content;
+                let summary = data.choices[0].message.content;
+                summary = summary.replace(/^["']|["']$/g, '').trim();
                 
                 const newMem: MemoryFragment = {
                     id: `mem-${Date.now()}`,
@@ -384,7 +445,7 @@ Structure:
                     mood: 'diary'
                 };
                 
-                const updatedMems = [...selectedChar.memories, newMem];
+                const updatedMems = [...(selectedChar.memories || []), newMem];
                 updateCharacter(selectedChar.id, { memories: updatedMems });
                 
                 const updatedDiary = { ...currentEntry, isArchived: true };
@@ -393,9 +454,14 @@ Structure:
                 await loadDiaries(selectedChar.id);
                 
                 addToast('已归档至记忆库', 'success');
+            } else {
+                throw new Error(`API Error ${response.status}`);
             }
-        } catch (e) {
-            addToast('归档失败', 'error');
+        } catch (e: any) {
+            console.error(e);
+            addToast(`归档失败: ${e.message}`, 'error');
+        } finally {
+            setIsArchiving(false); // END LOADING
         }
     };
 
@@ -403,15 +469,17 @@ Structure:
 
     const renderPage = (page: DiaryPage, side: 'user' | 'char') => {
         const style = PAPER_STYLES.find(s => s.id === page.paperStyle) || PAPER_STYLES[0];
-        
+        const isInteractive = true; // Always interactive now for editing
+
         return (
             <div 
                 ref={side === activeTab ? paperRef : undefined}
                 className={`relative w-full h-full shadow-md transition-all duration-300 overflow-hidden ${style.css} flex flex-col rounded-3xl touch-none`}
                 style={{ ...style.style }}
-                onPointerMove={side === activeTab ? handlePointerMove : undefined}
-                onPointerUp={side === activeTab ? handlePointerUp : undefined}
-                onPointerLeave={side === activeTab ? handlePointerUp : undefined}
+                onPointerMove={isInteractive && side === activeTab ? handlePointerMove : undefined}
+                onPointerUp={isInteractive && side === activeTab ? handlePointerUp : undefined}
+                onPointerLeave={isInteractive && side === activeTab ? handlePointerUp : undefined}
+                onClick={handleBackgroundClick}
             >
                 {/* Content Container */}
                 <div className="flex-1 p-6 relative z-10 flex flex-col">
@@ -434,22 +502,49 @@ Structure:
                 </div>
 
                 {/* Stickers Layer */}
-                {page.stickers.map(s => (
-                    <div 
-                        key={s.id} 
-                        onPointerDown={(e) => handlePointerDown(e, s.id)}
-                        className={`absolute text-6xl select-none drop-shadow-md z-20 cursor-move ${draggingSticker === s.id ? 'scale-110 opacity-90' : ''} transition-transform`}
-                        style={{ 
-                            left: `${s.x}%`, 
-                            top: `${s.y}%`, 
-                            transform: `translate(-50%, -50%) rotate(${s.rotation}deg)` 
-                        }}
-                    >
-                        {s.url.startsWith('http') || s.url.startsWith('data') ? (
-                            <img src={s.url} className="w-20 h-20 object-contain pointer-events-none" />
-                        ) : s.url}
-                    </div>
-                ))}
+                {/* Check Hide Flag for Char Side */}
+                {!(side === 'char' && hideCharStickers) && page.stickers.map(s => {
+                    const isSelected = selectedStickerId === s.id;
+                    const scale = s.scale || 1.0;
+                    
+                    return (
+                        <div 
+                            key={s.id} 
+                            onPointerDown={(e) => handlePointerDown(e, s.id, 'move')}
+                            onClick={(e) => selectSticker(e, s.id)}
+                            className={`absolute text-6xl select-none drop-shadow-md z-20 cursor-move ${draggingSticker === s.id ? 'opacity-90' : ''} transition-transform`}
+                            style={{ 
+                                left: `${s.x}%`, 
+                                top: `${s.y}%`, 
+                                transform: `translate(-50%, -50%) rotate(${s.rotation}deg) scale(${scale})`,
+                                border: isSelected ? '2px dashed #3b82f6' : 'none',
+                                borderRadius: '8px',
+                                padding: '4px'
+                            }}
+                        >
+                            {s.url.startsWith('http') || s.url.startsWith('data') ? (
+                                <img src={s.url} className="w-20 h-20 object-contain pointer-events-none" draggable={false} />
+                            ) : s.url}
+
+                            {/* Controls for Selected Sticker */}
+                            {isSelected && (
+                                <>
+                                    {/* Delete Button (Top Right) */}
+                                    <div 
+                                        className="absolute -top-3 -right-3 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center text-xs shadow-md cursor-pointer pointer-events-auto"
+                                        onClick={(e) => { e.stopPropagation(); removeStickerFromPage(s.id); }}
+                                    >×</div>
+                                    
+                                    {/* Resize Handle (Bottom Right) */}
+                                    <div 
+                                        className="absolute -bottom-2 -right-2 w-5 h-5 bg-blue-500 rounded-full border-2 border-white shadow-md cursor-nwse-resize pointer-events-auto"
+                                        onPointerDown={(e) => handlePointerDown(e, s.id, 'resize')}
+                                    ></div>
+                                </>
+                            )}
+                        </div>
+                    );
+                })}
                 
                 {/* Paper Texture Overlay (Subtle) */}
                 <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/paper-fibers.png')] opacity-10 pointer-events-none z-0 mix-blend-multiply"></div>
@@ -460,7 +555,6 @@ Structure:
     if (mode === 'select') {
         return (
             <div className="h-full w-full bg-amber-50 flex flex-col font-light">
-                {/* Fixed Status Bar overlap with pt-12 */}
                 <div className="pt-12 pb-4 px-6 border-b border-amber-100 bg-amber-50/80 backdrop-blur-sm sticky top-0 z-20 flex items-center justify-between shrink-0 h-24 box-border">
                     <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-amber-100/50 active:scale-90 transition-transform">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-amber-900"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
@@ -472,9 +566,7 @@ Structure:
                 <div className="p-6 grid grid-cols-2 gap-5 overflow-y-auto pb-20 no-scrollbar">
                     {characters.map(c => (
                         <div key={c.id} onClick={() => handleCharSelect(c)} className="aspect-[3/4] bg-white rounded-r-2xl rounded-l-md border-l-4 border-l-amber-800 shadow-[2px_4px_12px_rgba(0,0,0,0.08)] p-4 flex flex-col items-center justify-center gap-3 cursor-pointer active:scale-95 transition-all relative overflow-hidden group">
-                            {/* Decorative Spine Shadow */}
                             <div className="absolute inset-y-0 left-0 w-2 bg-gradient-to-r from-black/10 to-transparent"></div>
-                            
                             <div className="w-16 h-16 rounded-full p-[2px] border border-amber-100 bg-amber-50">
                                 <img src={c.avatar} className="w-full h-full rounded-full object-cover" />
                             </div>
@@ -490,7 +582,6 @@ Structure:
     if (mode === 'calendar' && selectedChar) {
         return (
             <div className="h-full w-full bg-white flex flex-col font-light relative">
-                {/* Expanded Header with pt-12 */}
                 <div className="pt-12 pb-6 px-6 bg-amber-500 shadow-lg shrink-0 rounded-b-[2rem] z-20">
                     <div className="flex justify-between items-start mb-4">
                          <button onClick={() => setMode('select')} className="text-white/80 hover:text-white transition-colors">
@@ -505,7 +596,6 @@ Structure:
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-5 pb-20 no-scrollbar">
-                    {/* FIX: Use local date for creating new entry */}
                     <button onClick={() => openEntry(getLocalDateStr())} className="w-full py-5 mb-8 border-2 border-dashed border-amber-200 rounded-2xl text-amber-500 font-bold flex items-center justify-center gap-2 hover:bg-amber-50 active:scale-95 transition-all">
                         <span className="text-xl">+</span> 写今天的日记
                     </button>
@@ -536,19 +626,39 @@ Structure:
         );
     }
 
-    // --- WRITE MODE (Fullscreen Single Page) ---
+    // --- WRITE MODE ---
     return (
         <div className="h-full w-full bg-[#1a1a1a] flex flex-col relative overflow-hidden">
             
-            {/* 1. Editor Header with pt-12 safe area */}
+            {/* Editor Header */}
             <div className="pt-12 pb-3 px-4 bg-[#1a1a1a]/90 backdrop-blur-md flex items-center justify-between text-white shrink-0 z-30 h-24 box-border">
                 <button onClick={() => setMode('calendar')} className="p-2 -ml-2 text-white/60 hover:text-white rounded-full active:bg-white/10 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </button>
                 <div className="flex gap-3">
+                    {/* Toggle Char Sticker Visibility Button */}
+                    {activeTab === 'char' && (
+                        <button 
+                            onClick={() => setHideCharStickers(!hideCharStickers)} 
+                            className={`p-2 rounded-full transition-colors ${hideCharStickers ? 'bg-red-500/20 text-red-400' : 'bg-white/10 text-white/60'}`}
+                            title={hideCharStickers ? "显示贴纸" : "隐藏贴纸"}
+                        >
+                            {hideCharStickers ? (
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
+                            ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+                            )}
+                        </button>
+                    )}
+
                     {currentEntry?.charPage && !currentEntry.isArchived && (
-                        <button onClick={handleArchive} className="px-4 py-1.5 bg-emerald-600/90 rounded-full text-xs font-bold shadow-lg shadow-emerald-900/50 active:scale-95 transition-transform">
-                            归档记忆
+                        <button 
+                            onClick={handleArchive} 
+                            disabled={isArchiving}
+                            className={`px-4 py-1.5 rounded-full text-xs font-bold shadow-lg transition-all flex items-center gap-2 ${isArchiving ? 'bg-emerald-800 text-emerald-200 cursor-not-allowed' : 'bg-emerald-600/90 text-white shadow-emerald-900/50 active:scale-95'}`}
+                        >
+                            {isArchiving && <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>}
+                            {isArchiving ? '归档中...' : '归档记忆'}
                         </button>
                     )}
                     <button onClick={saveEntry} className="px-4 py-1.5 bg-white/10 rounded-full text-xs font-bold hover:bg-white/20 active:scale-95 transition-transform">
@@ -557,11 +667,9 @@ Structure:
                 </div>
             </div>
 
-            {/* 2. Main Page Area */}
+            {/* Main Page Area */}
             <div className="flex-1 relative w-full overflow-hidden flex flex-col">
                 <div className="flex-1 w-full max-w-xl mx-auto px-2 pb-4 pt-2 flex flex-col relative">
-                    
-                    {/* The Page Itself */}
                     <div className="flex-1 relative rounded-3xl transition-all duration-500">
                         {activeTab === 'user' && currentEntry && renderPage(currentEntry.userPage, 'user')}
                         
@@ -593,22 +701,20 @@ Structure:
                             )
                         )}
                     </div>
-
                 </div>
             </div>
 
-            {/* 3. Bottom Controls */}
+            {/* Bottom Controls */}
             <div className="shrink-0 bg-[#222] border-t border-white/5 pb-safe pt-2 z-30">
-                {/* Page Switcher Tabs */}
                 <div className="flex justify-center gap-4 mb-4 px-4">
                     <button 
-                        onClick={() => setActiveTab('user')}
+                        onClick={() => { setActiveTab('user'); setSelectedStickerId(null); }}
                         className={`flex-1 py-3 rounded-2xl text-xs font-bold uppercase tracking-wider transition-all duration-300 relative overflow-hidden ${activeTab === 'user' ? 'bg-white text-black shadow-lg' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}
                     >
                         My Diary
                     </button>
                     <button 
-                        onClick={() => setActiveTab('char')}
+                        onClick={() => { setActiveTab('char'); setSelectedStickerId(null); }}
                         className={`flex-1 py-3 rounded-2xl text-xs font-bold uppercase tracking-wider transition-all duration-300 relative overflow-hidden ${activeTab === 'char' ? 'bg-amber-500 text-white shadow-lg shadow-amber-900/50' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}
                     >
                         {selectedChar?.name || 'Partner'}
@@ -616,7 +722,6 @@ Structure:
                     </button>
                 </div>
 
-                {/* Toolbar */}
                 <div className="flex items-center justify-between px-6 pb-4">
                     <div className="flex gap-3 bg-[#111] p-1.5 rounded-full border border-white/10">
                         {PAPER_STYLES.slice(0, 4).map(s => (
@@ -630,7 +735,6 @@ Structure:
                     </div>
                     
                     <div className="flex gap-3">
-                        {/* Regenerate Button (Only visible on char page if reply exists) */}
                         {activeTab === 'char' && currentEntry?.charPage && !isThinking && (
                             <button onClick={handleExchange} className="w-11 h-11 bg-white/10 text-white rounded-full flex items-center justify-center active:scale-90 transition-transform border border-white/5">
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
@@ -646,7 +750,6 @@ Structure:
                     </div>
                 </div>
 
-                {/* Sticker Drawer */}
                 {showStickerPanel && (
                     <div className="bg-[#1a1a1a] border-t border-white/10 p-4 animate-slide-up h-48 overflow-y-auto no-scrollbar">
                         <div className="grid grid-cols-6 gap-3">
@@ -680,7 +783,7 @@ Structure:
 
             {/* Sticker Import Modal */}
             <Modal 
-                isOpen={showImportModal} title="添加贴纸" onClose={() => setShowImportModal(false)}
+                isOpen={showImportModal} title="添加日记贴纸" onClose={() => setShowImportModal(false)}
                 footer={<button onClick={handleImportStickers} className="w-full py-3 bg-white/10 text-white font-bold rounded-2xl hover:bg-white/20 transition-all">确认添加</button>}
             >
                 <div className="space-y-3">
@@ -696,12 +799,12 @@ Structure:
 
             {/* Sticker Delete Confirmation Modal */}
             <Modal 
-                isOpen={!!deletingSticker} title="删除贴纸" onClose={() => setDeletingSticker(null)}
-                footer={<div className="flex gap-2 w-full"><button onClick={() => setDeletingSticker(null)} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-2xl font-bold">取消</button><button onClick={handleDeleteSticker} className="flex-1 py-3 bg-red-500 text-white rounded-2xl font-bold">删除</button></div>}
+                isOpen={!!deletingSticker} title="删除贴纸素材" onClose={() => setDeletingSticker(null)}
+                footer={<div className="flex gap-2 w-full"><button onClick={() => setDeletingSticker(null)} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-2xl font-bold">取消</button><button onClick={handleDeleteStickerAsset} className="flex-1 py-3 bg-red-500 text-white rounded-2xl font-bold">删除</button></div>}
             >
                 <div className="flex flex-col items-center gap-3 py-2">
                     {deletingSticker && <img src={deletingSticker.url} className="w-16 h-16 object-contain rounded-lg bg-slate-100 border" />}
-                    <p className="text-sm text-slate-600">确定要删除这个贴纸吗？</p>
+                    <p className="text-sm text-slate-600">确定要删除这个贴纸素材吗？(不会影响已使用的日记)</p>
                 </div>
             </Modal>
         </div>

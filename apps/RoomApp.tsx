@@ -299,6 +299,21 @@ const RoomApp: React.FC = () => {
         return now.toISOString().split('T')[0]; // YYYY-MM-DD
     };
 
+    // Calculate Time Gap - Duplicated logic from other apps for self-containment
+    const getTimeGapHint = (lastMsgTimestamp: number | undefined): string => {
+        if (!lastMsgTimestamp) return '这是初次见面。';
+        const now = Date.now();
+        const diffMs = now - lastMsgTimestamp;
+        const diffMins = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHours / 24);
+
+        if (diffMins < 5) return '你们刚刚还在聊天。';
+        if (diffMins < 60) return `距离上次互动只有 ${diffMins} 分钟。`;
+        if (diffHours < 24) return `距离上次互动已经过了 ${diffHours} 小时。`;
+        return `距离上次互动已经过了 ${diffDays} 天。`;
+    };
+
     // --- 1. Selection & Initialization ---
 
     const handleEnterRoom = async (c: CharacterProfile) => {
@@ -414,7 +429,9 @@ const RoomApp: React.FC = () => {
 
         try {
             const todayStr = getVirtualDay();
-            const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const now = new Date();
+            const nowTimeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const nowDateStr = now.toLocaleDateString();
             
             let existingTodo = await DB.getRoomTodo(c.id, todayStr);
             const existingNotes = await DB.getRoomNotes(c.id);
@@ -426,10 +443,15 @@ const RoomApp: React.FC = () => {
             }
 
             const recentMsgs = await DB.getMessagesByCharId(c.id);
-            const chatContext = recentMsgs.slice(-20).map(m => {
+            // Increased context from 20 to 50
+            const chatContext = recentMsgs.slice(-50).map(m => {
                 const role = m.role === 'user' ? '用户' : c.name;
                 return `${role}: ${m.content.substring(0, 50)}`; 
             }).join('\n');
+
+            // Time Gap Calculation
+            const lastMsg = recentMsgs[recentMsgs.length - 1];
+            const timeGapHint = getTimeGapHint(lastMsg?.timestamp);
 
             const baseContext = ContextBuilder.buildCoreContext(c, userProfile, true); // Keep Full Context
             
@@ -442,16 +464,18 @@ const RoomApp: React.FC = () => {
 
             let prompt = `${baseContext}
 
-### [Context Injection]
-以下是你们最近的聊天记录摘要（用于判断角色当下的心情和对用户的态度）：
+### [Environment Context - Critical]
+**当前现实时间**: ${nowDateStr} ${nowTimeStr}
+**与用户上次互动距离现在**: ${timeGapHint}
+**最近互动记录 (Latest 50)**:
 ${chatContext}
 
 ### [Room Initialization - Batch Generation]
 用户进入了**你的**房间。请一次性生成房间的状态、物品交互文本，以及（如果需要）你今天的计划和随笔。
 
 ### 1. 房间状态 (Status)
-- **ActorStatus**: 你现在在房间里做什么？(一句话)
-- **Welcome**: 看到用户进来，你第一句话说什么？(请结合上面的聊天记录态度)
+- **ActorStatus**: 你现在在房间里做什么？(请严格基于当前时间${nowTimeStr}和时间差${timeGapHint}来推断。如果是深夜可能在睡觉，如果很久没见可能在发呆。)
+- **Welcome**: 看到用户进来，你第一句话说什么？(请结合时间差：如果很久没见，是惊讶、想念还是生气？)
 
 ### 2. 物品交互 (Items)
 房间里有以下物品：
@@ -467,9 +491,10 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
 ### 4. 记事簿随笔 (Notebook Entry)
 请在你的私密记事簿上写点什么。
 **要求**：
-1. **风格多变**：不仅仅是纯文本。可以是刚写的歌词、一段代码、ASCII艺术涂鸦、清单、或者是排版混乱的碎碎念。
-2. **格式丰富**：请积极使用 **Markdown** 格式让排版更有趣。
-3. **内容新颖**：必须是新的内容，展示你作为独立个体的思考。
+1. **风格多变**：可以是刚写的歌词、随笔感悟、心情记录、或者是一首短诗、一份购物清单。
+2. **严禁代码**：**严禁**生成代码块(Code Blocks)或伪代码，除非你的核心设定明确是程序员。请像正常人写日记一样自然。
+3. **格式丰富**：请积极使用 **Markdown** 格式让排版更有趣。
+4. **内容新颖**：必须是新的内容，展示你作为独立个体的思考。
 
 ### 输出格式 (Strict JSON)
 {
@@ -571,7 +596,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                         charId: c.id,
                         role: 'system',
                         type: 'text',
-                        content: `[系统: ${c.name} 在记事本上写下了: "${newNote.content}"]`
+                        content: `[系统: ${c.name} 在记事本上写下了新的想法。]`
                     });
                 }
 
@@ -647,8 +672,9 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
     };
 
     const handleDeleteNote = async (id: string) => {
+        await DB.deleteRoomNote(id);
         setNotebookEntries(prev => prev.filter(n => n.id !== id));
-        addToast('笔记已移除 (仅本次会话)', 'info');
+        addToast('笔记已彻底粉碎', 'success');
     };
 
     const handleStageClick = (e: React.MouseEvent) => {

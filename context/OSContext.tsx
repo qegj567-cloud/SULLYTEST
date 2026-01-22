@@ -145,11 +145,11 @@ Sully是小手机的内置AI。
 `,
 
   sprites: {
-      'normal': 'https://sharkpan.xyz/f/4r7ztj/1.png',
-      'happy': 'https://sharkpan.xyz/f/Nd3vfv/2.png',
-      'sad': 'https://sharkpan.xyz/f/xl34fX/3.png',
-      'angry': 'https://sharkpan.xyz/f/VylNfY/4.png',
-      'shy': 'https://sharkpan.xyz/f/dD4et8/5.png',
+      'normal': 'https://sharkpan.xyz/f/w3QQFq/01.png',
+      'happy': 'https://sharkpan.xyz/f/MKg7ta/02.png',
+      'sad': 'https://sharkpan.xyz/f/3WnMce/03.png',
+      'angry': 'https://sharkpan.xyz/f/5n1xSj/04.png',
+      'shy': 'https://sharkpan.xyz/f/kdwet6/05.png',
       'chibi': 'https://sharkpan.xyz/f/oWZQF4/S2.png' // Default Room Sprite
   },
   

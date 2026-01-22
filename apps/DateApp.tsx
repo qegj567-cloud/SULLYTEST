@@ -206,31 +206,58 @@ const DateApp: React.FC = () => {
         return `[系统提示: 距离上次互动: ${days} 天。用户消失了很久。请根据你们的关系做出反应（想念、生气、担心或冷漠）。]`;
     };
 
-    // --- Simplified Splitter ---
-    const simpleSplitText = (text: string): string[] => {
-        if (!text) return [];
-        return text.split(/\n+/).map(s => s.trim()).filter(s => s.length > 0);
+    // Helper to identify noise lines
+    const isContextNoise = (line: string) => {
+        const l = line.trim().toLowerCase();
+        // Check for specific context leaks
+        if (l.startsWith('(') && l.endsWith(')')) {
+            if (l.includes('in person') || l.includes('face-to-face') || l.includes('location') || l.includes('time')) return true;
+        }
+        // Strict system note blocking
+        if (l.startsWith('[system') || l.startsWith('(system')) return true;
+        return false;
     };
 
+    // --- Optimized Visual Novel Parser (Line-based State Machine) ---
     const parseDialogue = (fullText: string, initialEmotion: string = 'normal'): DialogueItem[] => {
+        // 1. Split by newlines. Filter empty lines.
+        const lines = fullText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        
         const results: DialogueItem[] = [];
-        const parts = fullText.split(/(\[.*?\])/);
         let currentEmotion = initialEmotion;
 
-        for (const part of parts) {
-            const tagMatch = part.match(/^\[(.*?)\]$/);
+        for (const line of lines) {
+            // --- FILTER: Block Common Context Leaks ---
+            if (isContextNoise(line)) continue;
+            // ------------------------------------------
+
+            // 2. Check for [emotion] tag at the very start of the line
+            const tagMatch = line.match(/^\[([a-zA-Z0-9_\-]+)\]\s*(.*)/);
+            
+            let content = line;
+            
             if (tagMatch) {
-                currentEmotion = tagMatch[1].trim().toLowerCase();
-            } else if (part.trim()) {
-                const lines = simpleSplitText(part);
-                lines.forEach(s => {
-                    results.push({
-                        text: s,
-                        emotion: currentEmotion
-                    });
+                // Found a tag, update state
+                currentEmotion = tagMatch[1].toLowerCase();
+                content = tagMatch[2]; // The rest of the line
+            } else {
+                // Check if the line is JUST a tag
+                const standaloneTag = line.match(/^\[([a-zA-Z0-9_\-]+)\]$/);
+                if (standaloneTag) {
+                    currentEmotion = standaloneTag[1].toLowerCase();
+                    continue; 
+                }
+            }
+
+            // 3. Push the content as a bubble if not empty
+            if (content) {
+                results.push({
+                    text: content,
+                    emotion: currentEmotion
                 });
             }
         }
+
         return results;
     };
 
@@ -382,17 +409,13 @@ ${recentMsgs}
     
     const callDateAPI = async (msgs: Message[], userMsg: string) => {
         const msgsToUse = msgs;
-        
-        // CRITICAL UPDATE: Calculate gap based on the message BEFORE the user's current input
-        // msgs array already includes the new userMsg at the end.
-        // So we look at index [length - 2].
         const previousMsg = msgsToUse.length >= 2 ? msgsToUse[msgsToUse.length - 2] : null;
-        
-        // This hint calculates the gap between the *previous* interaction (chat or date) and *now*.
         const gapHint = getTimeGapHint(previousMsg?.timestamp);
 
+        // ENSURE CONSISTENCY: Same logic as Chat App
+        // Use user-defined limit or default 500
         const limit = char!.contextLimit || 500;
-        // Construct history (excluding the very last user message which we will inject with context)
+        
         const historyMsgs = msgsToUse.slice(-limit, -1).map(m => {
             let content = m.content;
             if (m.type === 'image') content = '[User sent an image]';
@@ -402,35 +425,51 @@ ${recentMsgs}
         const availableSprites = Object.keys(char!.sprites || {});
         const validEmotions = availableSprites.length > 0 ? availableSprites : REQUIRED_EMOTIONS;
         
+        // ENSURE CONSISTENCY: Use central ContextBuilder
         let systemPrompt = ContextBuilder.buildCoreContext(char!, userProfile);
 
-        systemPrompt += `### [Visual Novel / Interactive Mode Instructions]
-你正在与用户进行**面对面**的互动 (Visual Novel / 约会模式)。
+        systemPrompt += `### [Visual Novel Mode: 视觉小说脚本模式]
+你正在与用户进行**面对面**的互动。
 
-### 场景连贯性说明 (Consistency)
-1. **Location**: 你们现在**面对面**。请记住你们刚才在哪里（如果Chat History提到去咖啡厅，那就在咖啡厅）。
-2. **Identity**: 保持你的人设。如果你是AI，你是以全息投影、机器人还是屏幕形式存在？如果你是真人，符合你的生活习惯。
-3. **Time Awareness**: 请**务必**注意用户消息后的 [System Hint]。如果提示很久没见，你的第一反应应该是惊讶、思念或生气，而不是像刚刚才聊过一样。
+### 核心规则：一行一念 (One Line per Beat)
+前端解析器基于**换行符**来分割气泡。为了保证演出效果，请严格遵守以下规则：
 
-### 视觉小说(VN) 输出规则
-1. **多情绪支持**: 你可以在回复的中间改变情绪。
-   格式: \`[happy]台词... [sad]台词... [angry]台词...\`
+1. **绝对禁止混写**:
+   - ❌ **严重错误**: \`他叹了口气说：“好吧。”\` (严禁在同一行里既写动作又写带引号的台词)
+   - ❌ **严重错误**: \`“行吧。”他无奈地摊手。\`
+   - ✅ **正确**:
+     \`他叹了口气。\` (第一行：动作)
+     \`“好吧。”\` (第二行：台词)
+
+2. **情绪标签 (Emotion Tags)**:
+   - 格式: \`[emotion]\` (放在行首)。
+   - **状态机逻辑**: 如果某一行没有标签，它将**继承**上一行的情绪。
+   - 为了防止情绪状态错误，建议在每一句台词前都确认一下标签，或者在情绪变化时务必打上标签。
    - 可用标签: ${validEmotions.join(', ')}
-   - 标签必须放在该段情绪文字的**前面**。
-   - 每次输出都至少使用2个不同的标签 
-2. **写作风格**:
-   - 包含**环境描写**、**肢体动作**、**神态描写**和**对话**。
-   - 使用小说式叙述。
-   - 动作描写和台词要自然穿插。
+
+3. **写作格式**:
+   - **台词**: 必须用双引号 **“...”** 包裹。
+   - **动作/心理/旁白**: 直接写，不要加引号。
+
+### 示例 (Example Output)
+[surprised] “欸？你怎么突然来了？”
+[surprised] Sully手忙脚乱地把桌上的零食扫进抽屉里。
+[shy] “咳……那个，我刚才可没有在偷懒哦。”
+[shy] 他看起来有点心虚，眼神游离，不敢直视你。
+[shy] “……大概吧。”
+[happy] “不过既然来了，要不要看看我刚写的代码？”
+
+### 场景上下文
+1. **Location**: 你们现在**面对面**。
+2. **Time**: ${gapHint}
 `;
 
         const apiMessages = [
             { role: 'system', content: systemPrompt },
             ...historyMsgs,
-            // Inject the Time Gap Hint directly into the user's message payload for the AI
             { 
                 role: 'user', 
-                content: `${userMsg}\n\n${gapHint} (System Note: 用户就在你面前，请直接互动，描写你的动作和神态。请根据时间间隔做出反应。)` 
+                content: `${userMsg}\n\n(System Note: 请严格遵守 VN 脚本格式。严禁一行内混写动作和台词。)` 
             }
         ];
 
@@ -453,11 +492,10 @@ ${recentMsgs}
         setShowInputBox(false);
         
         // 1. CONDITIONAL SAVE: OPENING
-        // If this is the FIRST interaction, save the Opening (Peek Status) first
         if (!hasSavedOpening && peekStatus) {
             await DB.saveMessage({
                 charId: char.id,
-                role: 'assistant', // "Narrator" style, stored as assistant for simplicity
+                role: 'assistant', 
                 type: 'text',
                 content: peekStatus,
                 metadata: { source: 'date' }
@@ -500,10 +538,16 @@ ${recentMsgs}
             });
             
             // 5. Update UI
-            const cleanText = content.replace(/\[.*?\]/g, '');
+            // Filter noise before displaying
+            let cleanText = content.replace(/\[.*?\]/g, '');
+            // Clean common leaks from Full Text
+            cleanText = cleanText.split('\n').filter(l => !isContextNoise(l)).join('\n');
+            
             setFullNovelText(prev => prev + cleanText);
             
+            // Use the new Line-Based Parser
             const items = parseDialogue(content, 'normal'); 
+            
             setDialogueBatch(items);
             setDialogueQueue(items);
             
@@ -543,25 +587,22 @@ ${recentMsgs}
             // Delete DB record
             await DB.deleteMessage(lastMsg.id);
             
-            // Remove text from Full Novel View (using stored last text or generic strip)
-            // If we have exact text state, use it. Otherwise, this visual part is tricky.
-            // Best effort: Remove the exact content string from end of fullText
+            // Remove text from Full Novel View
             if (lastAiText) {
                 setFullNovelText(prev => {
                     const cleanLast = lastAiText.replace(/\[.*?\]/g, '');
-                    return prev.replace(cleanLast, '');
+                    // Also attempt to clean noise if it was present
+                    const cleanLastNoNoise = cleanLast.split('\n').filter(l => !isContextNoise(l)).join('\n');
+                    // Try removing exact match first, if fails, simple replace might leave artifacts but it's acceptable for reroll edge case
+                    return prev.replace(cleanLastNoNoise, '').replace(cleanLast, '');
                 });
-            } else {
-                // Fallback if state lost: don't strip novel text to avoid breaking older text, 
-                // just clear dialogue box
             }
 
             // 4. Re-call API using the PREVIOUS message (User input)
-            // Note: DB delete is async but usually fast. We fetch msgs again or just pop locally.
             const userMsgObj = msgs[msgs.length - 2];
             if (!userMsgObj) throw new Error("No context found");
 
-            const newMsgsContext = msgs.slice(0, msgs.length - 1); // Exclude the deleted one
+            const newMsgsContext = msgs.slice(0, msgs.length - 1); 
             const response = await callDateAPI(newMsgsContext, userMsgObj.content);
 
             if (!response.ok) throw new Error('API Error');
@@ -580,7 +621,9 @@ ${recentMsgs}
             });
 
             // 6. Update UI
-            const cleanText = content.replace(/\[.*?\]/g, '');
+            let cleanText = content.replace(/\[.*?\]/g, '');
+            cleanText = cleanText.split('\n').filter(l => !isContextNoise(l)).join('\n');
+            
             setFullNovelText(prev => prev + cleanText);
             
             const items = parseDialogue(content, 'normal'); 
@@ -790,7 +833,8 @@ ${recentMsgs}
                 <div className="h-16 flex items-center justify-between px-4 border-b border-slate-200 bg-white shrink-0 z-20">
                     <button onClick={handleBack} className="p-2 -ml-2 text-slate-600 active:scale-95 transition-transform"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg></button>
                     <span className="font-bold text-slate-700">场景布置</span>
-                    <button onClick={handleSaveSettings} className="px-4 py-1.5 bg-primary text-white text-xs font-bold rounded-full shadow-sm active:scale-95 transition-transform">保存</button>
+                    {/* OLD Header Save Button REMOVED */}
+                    <div className="w-8"></div>
                 </div>
                 
                 {/* Live Preview Area */}
@@ -864,6 +908,13 @@ ${recentMsgs}
                     </section>
                     <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
                 </div>
+
+                {/* NEW Bottom Fixed Save Button */}
+                <div className="p-4 border-t border-slate-200 bg-white/90 backdrop-blur-sm sticky bottom-0 z-20">
+                    <button onClick={handleSaveSettings} className="w-full py-3 bg-primary text-white font-bold rounded-2xl shadow-lg active:scale-95 transition-transform">
+                        保存当前布置
+                    </button>
+                </div>
             </div>
         );
     }
@@ -904,7 +955,7 @@ ${recentMsgs}
                     onClick={(e) => { e.stopPropagation(); openSettings('vn'); }} 
                     className="bg-black/30 backdrop-blur-md text-white w-10 h-10 rounded-full flex items-center justify-center border border-white/20 hover:bg-white/20 transition-all shadow-lg active:scale-95"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 2.555c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-2.555c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.212 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-2.555c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 2.555c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.212 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-2.555c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
                 </button>
 
                 <button 

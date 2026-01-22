@@ -1,9 +1,13 @@
 
-import { CharacterProfile, Message, ChatTheme, FullBackupData, GalleryImage, UserProfile, DiaryEntry, Task, Anniversary, RoomTodo, RoomNote, GroupProfile } from '../types';
+import { 
+    CharacterProfile, ChatTheme, Message, UserProfile, 
+    Task, Anniversary, DiaryEntry, RoomTodo, RoomNote, 
+    GalleryImage, FullBackupData, GroupProfile 
+} from '../types';
 
 const DB_NAME = 'AetherOS_Data';
 // CRITICAL FIX: Increment version to force `onupgradeneeded`
-const DB_VERSION = 19; 
+const DB_VERSION = 20; 
 
 const STORE_CHARACTERS = 'characters';
 const STORE_MESSAGES = 'messages';
@@ -18,7 +22,8 @@ const STORE_TASKS = 'tasks';
 const STORE_ANNIVERSARIES = 'anniversaries';
 const STORE_ROOM_TODOS = 'room_todos'; 
 const STORE_ROOM_NOTES = 'room_notes'; 
-const STORE_GROUPS = 'groups'; // New
+const STORE_GROUPS = 'groups'; 
+const STORE_JOURNAL_STICKERS = 'journal_stickers'; // New Store for Journal App Stickers
 
 export interface ScheduledMessage {
     id: string;
@@ -97,6 +102,9 @@ const openDB = (): Promise<IDBDatabase> => {
 
       // Groups Store
       createStore(STORE_GROUPS, { keyPath: 'id' });
+
+      // Journal Stickers Store
+      createStore(STORE_JOURNAL_STICKERS, { keyPath: 'name' });
     };
   });
 };
@@ -321,6 +329,32 @@ export const DB = {
     transaction.objectStore(STORE_ASSETS).delete(id);
   },
 
+  // --- Journal Stickers ---
+
+  getJournalStickers: async (): Promise<{name: string, url: string}[]> => {
+    const db = await openDB();
+    if (!db.objectStoreNames.contains(STORE_JOURNAL_STICKERS)) return [];
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_JOURNAL_STICKERS, 'readonly');
+      const store = transaction.objectStore(STORE_JOURNAL_STICKERS);
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  },
+
+  saveJournalSticker: async (name: string, url: string): Promise<void> => {
+    const db = await openDB();
+    const transaction = db.transaction(STORE_JOURNAL_STICKERS, 'readwrite');
+    transaction.objectStore(STORE_JOURNAL_STICKERS).put({ name, url });
+  },
+
+  deleteJournalSticker: async (name: string): Promise<void> => {
+    const db = await openDB();
+    const transaction = db.transaction(STORE_JOURNAL_STICKERS, 'readwrite');
+    transaction.objectStore(STORE_JOURNAL_STICKERS).delete(name);
+  },
+
   // --- Gallery ---
 
   saveGalleryImage: async (img: GalleryImage): Promise<void> => {
@@ -542,6 +576,12 @@ export const DB = {
       transaction.objectStore(STORE_ROOM_NOTES).put(note);
   },
 
+  deleteRoomNote: async (id: string): Promise<void> => {
+      const db = await openDB();
+      const transaction = db.transaction(STORE_ROOM_NOTES, 'readwrite');
+      transaction.objectStore(STORE_ROOM_NOTES).delete(id);
+  },
+
   // --- Bulk Export/Import ---
   
   exportFullData: async (): Promise<Partial<FullBackupData>> => {
@@ -560,7 +600,7 @@ export const DB = {
           });
       };
 
-      const [characters, messages, themes, emojis, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups] = await Promise.all([
+      const [characters, messages, themes, emojis, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers] = await Promise.all([
           getAllFromStore(STORE_CHARACTERS),
           getAllFromStore(STORE_MESSAGES),
           getAllFromStore(STORE_THEMES),
@@ -574,6 +614,7 @@ export const DB = {
           getAllFromStore(STORE_ROOM_TODOS),
           getAllFromStore(STORE_ROOM_NOTES),
           getAllFromStore(STORE_GROUPS),
+          getAllFromStore(STORE_JOURNAL_STICKERS),
       ]);
 
       const userProfile = userProfiles.length > 0 ? {
@@ -583,7 +624,7 @@ export const DB = {
       } : undefined;
 
       return {
-          characters, messages, customThemes: themes, savedEmojis: emojis, assets, galleryImages, userProfile, diaries, tasks, anniversaries, roomTodos, roomNotes, groups
+          characters, messages, customThemes: themes, savedEmojis: emojis, assets, galleryImages, userProfile, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, savedJournalStickers: journalStickers
       };
   },
 
@@ -595,7 +636,7 @@ export const DB = {
           STORE_CHARACTERS, STORE_MESSAGES, STORE_THEMES, STORE_EMOJIS, 
           STORE_ASSETS, STORE_GALLERY, STORE_USER, STORE_DIARIES, 
           STORE_TASKS, STORE_ANNIVERSARIES, STORE_ROOM_TODOS, STORE_ROOM_NOTES,
-          STORE_GROUPS
+          STORE_GROUPS, STORE_JOURNAL_STICKERS
       ].filter(name => db.objectStoreNames.contains(name));
 
       const tx = db.transaction(availableStores, 'readwrite');
@@ -608,7 +649,7 @@ export const DB = {
       };
 
       if (data.characters) {
-          // If media assets are separated, restore them
+          // Normal Data Backup Import Logic
           if (data.mediaAssets) {
               data.characters = data.characters.map(c => {
                   const media = data.mediaAssets?.find(m => m.charId === c.id);
@@ -633,7 +674,43 @@ export const DB = {
               });
           }
           clearAndAdd(STORE_CHARACTERS, data.characters);
+      } else if (data.mediaAssets && availableStores.includes(STORE_CHARACTERS)) {
+          // Media Only Backup Import Logic (Merge into existing DB characters)
+          const charStore = tx.objectStore(STORE_CHARACTERS);
+          // Note: getAll() is async within the transaction context
+          const request = charStore.getAll();
+          
+          request.onsuccess = () => {
+              const existingChars = request.result as CharacterProfile[];
+              if (existingChars && existingChars.length > 0) {
+                  const updatedChars = existingChars.map(c => {
+                      const media = data.mediaAssets?.find(m => m.charId === c.id);
+                      if (media) {
+                          return {
+                              ...c,
+                              sprites: media.sprites || c.sprites, // Restore Sprites!
+                              chatBackground: media.backgrounds?.chat || c.chatBackground,
+                              dateBackground: media.backgrounds?.date || c.dateBackground,
+                              roomConfig: c.roomConfig ? {
+                                  ...c.roomConfig,
+                                  wallImage: media.backgrounds?.roomWall || c.roomConfig.wallImage,
+                                  floorImage: media.backgrounds?.roomFloor || c.roomConfig.floorImage,
+                                  items: c.roomConfig.items.map(item => {
+                                      const img = media.roomItems?.[item.id];
+                                      return img ? { ...item, image: img } : item;
+                                  })
+                              } : c.roomConfig
+                          } as CharacterProfile;
+                      }
+                      return c;
+                  });
+                  
+                  // Update Store
+                  updatedChars.forEach(c => charStore.put(c));
+              }
+          };
       }
+
       if (data.messages) {
            if (availableStores.includes(STORE_MESSAGES)) {
                const store = tx.objectStore(STORE_MESSAGES);
@@ -651,6 +728,7 @@ export const DB = {
       if (data.roomTodos) clearAndAdd(STORE_ROOM_TODOS, data.roomTodos);
       if (data.roomNotes) clearAndAdd(STORE_ROOM_NOTES, data.roomNotes);
       if (data.groups) clearAndAdd(STORE_GROUPS, data.groups);
+      if (data.savedJournalStickers) clearAndAdd(STORE_JOURNAL_STICKERS, data.savedJournalStickers);
       
       if (data.userProfile) {
           if (availableStores.includes(STORE_USER)) {

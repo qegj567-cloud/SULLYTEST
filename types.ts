@@ -238,6 +238,7 @@ export interface StickerData {
     x: number;
     y: number;
     rotation: number;
+    scale?: number; // Added scale property
 }
 
 export interface DiaryPage {
@@ -302,6 +303,7 @@ export interface FullBackupData {
     messages?: Message[];
     customThemes?: ChatTheme[];
     savedEmojis?: {name: string, url: string}[];
+    savedJournalStickers?: {name: string, url: string}[]; // New backup field
     assets?: { id: string, data: string }[];
     galleryImages?: GalleryImage[];
     userProfile?: UserProfile;
